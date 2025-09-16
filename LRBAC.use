@@ -1,0 +1,708 @@
+model paper5
+
+-- **********Policy Space**********
+class Role
+attributes
+    name: String
+    maxMembers: Integer
+    maxJuniors: Integer
+    exclusiveJuniorsAllowed: Boolean
+operations
+    userAssignmentExclusive(): Set(Role) =
+        MutuallyExclusive.allInstances()
+          ->select(me | me.wrtUserAssignment and me.roleA->includes(self))
+          ->collect(me |
+              me.roleB
+                ->union( if me.wrtSeniors then me.roleB->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                ->union( if me.wrtJuniors then me.roleB->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+          )->flatten()->asSet()
+        ->union(
+          MutuallyExclusive.allInstances()
+            ->select(me | me.wrtUserAssignment and me.roleB->includes(self))
+            ->collect(me |
+                me.roleA
+                  ->union( if me.wrtSeniors then me.roleA->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                  ->union( if me.wrtJuniors then me.roleA->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+            )->flatten()->asSet()
+        )
+
+    permissionAssignmentExclusive(): Set(Role) =
+        MutuallyExclusive.allInstances()
+          ->select(me | me.wrtPermissionAssignment and me.roleA->includes(self))
+          ->collect(me | me.roleB)->flatten()->asSet()
+        ->union(
+          MutuallyExclusive.allInstances()
+            ->select(me | me.wrtPermissionAssignment and me.roleB->includes(self))
+            ->collect(me | me.roleA)->flatten()->asSet()
+        )
+
+    activeRolesExclusives(): Set(Role) = 
+        MutuallyExclusive.allInstances()
+          ->select(me | me.wrtActiveRoles and me.roleA->includes(self))
+          ->collect(me |
+              me.roleB
+                ->union( if me.wrtSeniors then me.roleB->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                ->union( if me.wrtJuniors then me.roleB->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+          )->flatten()->asSet()
+        ->union(
+          MutuallyExclusive.allInstances()
+            ->select(me | me.wrtActiveRoles and me.roleB->includes(self))
+            ->collect(me |
+                me.roleA
+                  ->union( if me.wrtSeniors then me.roleA->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                  ->union( if me.wrtJuniors then me.roleA->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+            )->flatten()->asSet()
+        )
+
+    juniorsExclusives(): Set(Role) = self.activeRolesExclusives()->intersection(self.junior->closure(junior))
+    seniorsExclusives(): Set(Role) = self.activeRolesExclusives()->intersection(self.senior->closure(senior))
+    juniors(): Set(Role) = self.junior->closure(junior)
+    seniors(): Set(Role) = self.senior->closure(senior)
+    required(): Set(Role) = self.required
+    checkAccess(a : Action, r : Resource, t : Snapshot): Boolean = 
+      self.session->exists(s | s.checkAccess(a,r,t))
+end
+
+class MutuallyExclusive
+attributes
+    id: String
+    wrtUserAssignment: Boolean
+    identicalSeniorAllowed: Boolean
+    wrtPermissionAssignment: Boolean
+    wrtActiveRoles: Boolean
+    wrtJuniors: Boolean
+    wrtSeniors: Boolean
+end
+
+class Permission
+attributes
+    name: String
+    maxRoles: Integer
+    maxSessions: Integer
+operations
+  checkAccess(a : Action, r : Resource): Boolean = 
+    self.resource->includes(r) and
+    self.action->includes(a) and
+    r.action->includes(a)
+    
+end
+
+class Resource
+attributes
+    name: String
+    resourceBasedDynamicSeparationOfDuty: Boolean
+    historyBasedDynamicSeparationOfDuty: Boolean
+end
+
+class Action
+attributes
+    name: String
+end
+
+class Location
+attributes
+    name: String
+operations
+    ancestors(): Set(Location) = Set{self}->closure(encloses)
+    descendants(): Set(Location) = Set{self}->closure(within)
+end
+
+class UserAt
+attributes
+    id: String
+end
+
+-- **********User Access Space**********
+
+class User
+attributes
+    name: String
+    maxRoles: Integer
+    maxRolesRespectingHierarchy: Boolean
+    maxSessions: Integer
+operations
+    successors(): Set(User) = self.succ->asSet()->closure(succ)
+    CreateSession(): Session
+end
+
+class Session
+attributes
+    id: String
+operations
+    successors(): Set(Session) = self.succ->asSet()->closure(succ)
+    checkAccess(a : Action, r : Resource, t : Snapshot) : Boolean =
+          (
+            let activeRoles : Set(Role) =
+                  self.activations->select(x | x.snap = t)->collect(x | x.role)->asSet()
+            in
+            let uLocs : Set(Location) =
+                  UserAt.allInstances()
+                    ->select(ua | ua.snap = t and ua.user = self.user)
+                    ->collect(ua | ua.loc)->asSet()
+            in
+            let rLocs : Set(Location) = r.loc->asSet()
+            in
+              activeRoles
+                ->collect(ro | ro.permission)
+                ->flatten()->asSet()
+                ->exists(p |
+                    p.checkAccess(a, r)
+                    and
+                    -- user location must be contained in permission’s allowed role-locations
+                    uLocs->exists(lu |
+                        p.roleLoc->includes(lu)
+                        or lu.ancestors()->exists(aLoc | p.roleLoc->includes(aLoc))
+                    )
+                    and
+                    rLocs->exists(rl |
+                        p.objLoc->includes(rl)
+                        or rl.ancestors()->exists(oLoc | p.objLoc->includes(oLoc))
+                    )
+                )
+          )
+          and
+          (
+            not r.resourceBasedDynamicSeparationOfDuty
+            or
+            Access.allInstances()
+                ->select(x |
+                x.resource = r and x.snap = t and x.session.user = self.user
+                )
+                ->collect(x | x.action)->asSet()
+                ->forAll(existingAction |
+                not ( a.right->includes(existingAction)
+                    or a.left ->includes(existingAction)
+                )
+            )
+        )
+          and
+          ( 
+         not r.historyBasedDynamicSeparationOfDuty or
+         Snapshot.allInstances()
+           ->select(s | s = t or s.successors()->includes(t))    
+           ->collect(s |
+               Access.allInstances()
+                 ->select(x | x.resource = r and x.snap = s and x.session.user = self.user)
+                 ->collect(x | x.action)
+           )->flatten()->asSet()
+           ->forAll(existingAction |
+              not (a.right->includes(existingAction) or a.left->includes(existingAction))
+           )
+      )
+
+
+
+end
+
+class Snapshot
+operations
+    successors(): Set(Snapshot) = self.succ->asSet()->closure(succ)
+end
+
+class Access
+attributes
+    id: String
+end
+
+class Activation
+end
+
+class Assignment
+attributes
+    id: String
+end
+
+-- ********************************
+-- **********Associations**********
+-- ********************************
+
+-- *************Role***************
+
+association MutuallyExclusiveRoleA between
+    Role[*] role roleA
+    MutuallyExclusive[0..1] role mutualExclusionToB
+end
+
+association MutuallyExclusiveRoleB between
+    Role[*] role roleB
+    MutuallyExclusive[0..1] role mutualExclusionToA
+end
+
+association PrerequisiteRoles between
+    Role[*] role required
+    Role[*] role dependent
+end
+
+association RoleHierarchy between
+    Role[*] role senior
+    Role[*] role junior
+end
+
+-- *************Permission***************
+
+association PermissionAssignment between
+    Role[*] role role
+    Permission[1..*] role permission
+end
+
+association PermissionResource between
+    Permission[1..*] role permission
+    Resource[1..*] role resource
+end
+
+association PermissionAction between
+    Permission[1..*] role permission
+    Action[1..*] role action
+end
+
+-- *************Resource-Actions***************
+association ResourceAction between
+    Resource[1..*] role resource
+    Action[1..*] role action
+end
+
+-- *************Action-Access***************
+association ActionAccess between
+    Action[1] role action
+    Access[*] role access
+end
+
+-- *************Resource-Access***************
+association AccessResource between
+    Resource[1] role resource
+    Access[*] role access
+end
+
+-- *************Access***************
+association PreSuccAccess between
+    Access[0..1] role pred
+    Access[0..1] role succ
+end
+
+-- *************Session***************
+association ActiveAccess between
+    Session[1] role session
+    Access[*] role access
+end
+
+association ActiveRoles between
+    Session[*] role session
+    Role[*] role role
+end
+
+association ActiveUser between
+    Session[*] role sessions
+    User[1] role user
+end
+
+association PredSuccSession between
+    Session[0..1] role pred
+    Session[0..1] role succ
+end
+
+-- *************User***************
+association SnapshotUser between
+    Snapshot[1] role snapshot
+    User[*] role user
+end
+
+association PredSuccUser between
+    User[0..1] role pred
+    User[0..1] role succ
+end
+
+association UserAssignment between
+    User[*] role users
+    Role[*] role roles
+end
+
+-- *************Activation***************
+association ActivationSession between
+    Session[1] role session
+    Activation[*] role activations
+end
+
+association ActivationRole between
+    Role[1] role role
+    Activation[*] role activations
+end
+
+association ActivationSnapshot between
+    Snapshot[1] role snap
+    Activation[*] role activations
+end
+
+association AccessSnapshot between
+    Snapshot[1] role snap
+    Access[*] role access
+end
+
+association MutuallyExclusiveActions between
+    Action[*] role left
+    Action[*] role right
+end
+
+association PredSuccSnapshot between
+    Snapshot[0..1] role pred
+    Snapshot[0..1] role succ
+end
+
+association LocationHierarchy between
+    Location[*] role encloses
+    Location[*] role within
+end
+
+association ResourceLocation between
+    Resource[*] role resource
+    Location[1] role loc
+end
+
+association RoleAssignLocation between
+    Role[1] role role
+    Location[*] role assignLoc
+end
+
+association RoleActivateLocation between
+    Role[1] role roleAct
+    Location[*] role activateLoc
+end
+
+association PermissionRoleLocation between
+    Permission[1] role permForRoleLoc 
+    Location[*] role roleLoc
+end
+
+association PermissionObjectLocation between
+    Permission[1] role permForObjLoc  
+    Location[*] role objLoc
+end
+
+association UserAtUser between
+    User[1] role user
+    UserAt[*] role at
+end
+
+association UserAtLocation between
+    Location[1] role loc
+    UserAt[*] role at
+end
+
+association UserAtSnapshot between
+    Snapshot[1] role snap
+    UserAt[*] role at
+end
+
+association AssignmentUser between
+    User[1] role asgUser
+    Assignment[*] role assignments
+end
+
+association AssignmentRole between
+    Role[1] role asgRole
+    Assignment[*] role assignments
+end
+
+association AssignmentSnapshot between
+    Snapshot[1] role asgSnap
+    Assignment[*] role assignments
+end
+
+-- ********************************
+-- **********Constraints***********
+-- ********************************
+constraints
+
+-- Role hierarchy must be acyclic
+context Role
+    inv AcyclicRoleHierarchy:
+        not self.senior->closure(senior)->includes(self)
+
+context Role::juniors(): Set(Role)
+    post: result = self.junior->closure(junior)
+
+context Role::seniors(): Set(Role)
+    post: result = self.senior->closure(senior)
+
+context Role::required(): Set(Role)
+    post: result = self.required
+
+context User::successors(): Set(User)
+    post: result = self.succ->asSet()->closure(succ)
+
+context Session::successors(): Set(Session)
+    post: result = self.succ->asSet()->closure(succ)
+
+context Snapshot::successors(): Set(Snapshot)
+    post: result = self.succ->asSet()->closure(succ)
+
+context Role
+    inv MaxMembersBound:
+        not self.maxMembers.oclIsUndefined() implies
+          self.users->size() <= self.maxMembers
+
+context Role
+    inv MaxJuniorsBound:
+        not self.maxJuniors.oclIsUndefined() implies
+          self.junior->closure(junior)->size() <= self.maxJuniors
+
+context User
+    inv MaxSessionsPerUser:
+        not self.maxSessions.oclIsUndefined() implies
+          self.sessions->size() <= self.maxSessions
+
+
+context Permission
+    inv PermissionMaxRoles:
+        not self.maxRoles.oclIsUndefined() implies
+          self.role->asSet()->size() <= self.maxRoles
+
+context Permission
+    inv PermissionMaxSessionsPerSnapshot:
+      not self.maxSessions.oclIsUndefined() implies
+        Snapshot.allInstances()->forAll(t |
+          Session.allInstances()
+            ->select(s | s.activations->exists(a |
+                a.snap = t and a.role.permission->includes(self)
+            ))->asSet()->size() <= self.maxSessions
+        )
+
+context Role::userAssignmentExclusive(): Set(Role)
+    post:
+      result =
+        MutuallyExclusive.allInstances()
+          ->select(me | me.wrtUserAssignment and me.roleA->includes(self))
+          ->collect(me |
+              me.roleB
+                ->union( if me.wrtSeniors then me.roleB->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                ->union( if me.wrtJuniors then me.roleB->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+          )->flatten()->asSet()
+        ->union(
+          MutuallyExclusive.allInstances()
+            ->select(me | me.wrtUserAssignment and me.roleB->includes(self))
+            ->collect(me |
+                me.roleA
+                  ->union( if me.wrtSeniors then me.roleA->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                  ->union( if me.wrtJuniors then me.roleA->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+            )->flatten()->asSet()
+        )
+
+context Role::permissionAssignmentExclusive(): Set(Role)
+    post:
+      result =
+        MutuallyExclusive.allInstances()
+          ->select(me | me.wrtPermissionAssignment and me.roleA->includes(self))
+          ->collect(me | me.roleB)->flatten()->asSet()
+        ->union(
+          MutuallyExclusive.allInstances()
+            ->select(me | me.wrtPermissionAssignment and me.roleB->includes(self))
+            ->collect(me | me.roleA)->flatten()->asSet()
+        )
+
+context Role::activeRolesExclusives(): Set(Role)
+    post:
+      result =
+        MutuallyExclusive.allInstances()
+          ->select(me | me.wrtActiveRoles and me.roleA->includes(self))
+          ->collect(me |
+              me.roleB
+                ->union( if me.wrtSeniors then me.roleB->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                ->union( if me.wrtJuniors then me.roleB->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+          )->flatten()->asSet()
+        ->union(
+          MutuallyExclusive.allInstances()
+            ->select(me | me.wrtActiveRoles and me.roleB->includes(self))
+            ->collect(me |
+                me.roleA
+                  ->union( if me.wrtSeniors then me.roleA->collect(x | x.senior->closure(senior))->flatten()->asSet() else Set{} endif )
+                  ->union( if me.wrtJuniors then me.roleA->collect(x | x.junior->closure(junior))->flatten()->asSet() else Set{} endif )
+            )->flatten()->asSet()
+        )
+
+context Role::juniorsExclusives(): Set(Role)
+    post: result = self.activeRolesExclusives()->intersection(self.junior->closure(junior))
+
+context Role::seniorsExclusives(): Set(Role)
+    post: result = self.activeRolesExclusives()->intersection(self.senior->closure(senior))
+
+context User
+  inv NoExclusiveRolesAssigned:
+    let allRoles : Set(Role) =
+          self.roles
+            ->union(self.roles.junior->closure(junior))
+            ->union(self.roles.senior->closure(senior))
+    in
+      allRoles->forAll(r1, r2 |
+        r1 <> r2 implies (
+          not MutuallyExclusive.allInstances()
+            ->exists(me |
+               me.wrtUserAssignment and
+               (
+                 ( me.roleA->includes(r1) and
+                   ( me.roleB->includes(r2)
+                     or (me.wrtSeniors and r2.senior->closure(senior)->exists(x | me.roleB->includes(x)))
+                     or (me.wrtJuniors and r2.junior->closure(junior)->exists(x | me.roleB->includes(x)))
+                   )
+                 )
+                 or
+                 ( me.roleB->includes(r1) and
+                   ( me.roleA->includes(r2)
+                     or (me.wrtSeniors and r2.senior->closure(senior)->exists(x | me.roleA->includes(x)))
+                     or (me.wrtJuniors and r2.junior->closure(junior)->exists(x | me.roleA->includes(x)))
+                   )
+                 )
+               )
+            )
+          or
+          MutuallyExclusive.allInstances()
+            ->exists(me |
+               me.wrtUserAssignment and me.identicalSeniorAllowed and
+               (me.roleA->includes(r1) or me.roleB->includes(r1)) and
+               (me.roleA->includes(r2) or me.roleB->includes(r2)) and
+               r1.senior->asSet()->intersection(r2.senior->asSet())->exists(s | self.roles->includes(s))
+            )
+        )
+      )
+
+
+
+context Permission
+    inv NoPermissionToExclusiveRolesTogether:
+      self.role->forAll(r1, r2 |
+        r1 <> r2 implies
+          not r1.permissionAssignmentExclusive()->includes(r2)
+      )
+
+context Session
+    inv NoExclusiveActiveRolesPerSnapshot:
+      Snapshot.allInstances()->forAll(t |
+        let actRoles : Set(Role) =
+          self.activations->select(a | a.snap = t)->collect(a | a.role)->asSet()
+        in
+          actRoles->forAll(r1, r2 |
+            r1 <> r2 implies
+              not r1.activeRolesExclusives()->includes(r2)
+              or
+              MutuallyExclusive.allInstances()
+                ->exists(me |
+                   me.wrtActiveRoles and me.identicalSeniorAllowed and
+                   (me.roleA->includes(r1) or me.roleB->includes(r1)) and
+                   (me.roleA->includes(r2) or me.roleB->includes(r2)) and
+                   r1.senior->asSet()->intersection(r2.senior->asSet())->notEmpty()
+                )
+          )
+      )
+
+context Role
+    inv PrerequisitesRespectedOnAssignment:
+      self.required->forAll(p |
+        p.users->includesAll(self.users)
+      )
+
+context User
+    inv NoUserCycle:
+      not self.succ->asSet()->closure(succ)->includes(self)
+
+context Session
+    inv NoSessionCycle:
+      not self.succ->asSet()->closure(succ)->includes(self)
+
+context Access
+    inv NoAccessCycle:
+      not self.succ->asSet()->closure(succ)->includes(self)
+
+context Resource
+  inv ResourceBasedDSOD:
+    self.resourceBasedDynamicSeparationOfDuty implies
+      Snapshot.allInstances()->forAll(t |
+        User.allInstances()->forAll(u |
+          let actsAtT : Set(Action) =
+            Access.allInstances()
+              ->select(x | x.resource = self and x.snap = t and x.session.user = u)
+              ->collect(x | x.action)->asSet()
+          in
+            -- no pair of actions related by MutuallyExclusiveActions is allowed together
+            not actsAtT->exists(a1 |
+                  a1.right->exists(a2 | actsAtT->includes(a2))
+               or a1.left ->exists(a0 | actsAtT->includes(a0))
+            )
+        )
+      )
+
+context Resource
+  inv HistoryBasedDSOD:
+    self.historyBasedDynamicSeparationOfDuty implies
+      Snapshot.allInstances()->forAll(t |
+        User.allInstances()->forAll(u |
+          let actionsInScenario : Set(Action) =
+            Set{t}->union(t.successors())
+              ->collect(s |
+                 Access.allInstances()
+                   ->select(x | x.resource = self and x.snap = s and x.session.user = u)
+                   ->collect(x | x.action)
+              )->flatten()->asSet()
+          in
+            -- forbid completing a mutually-exclusive pair across the scenario
+            not actionsInScenario->exists(a1 |
+                  a1.right->exists(a2 | actionsInScenario->includes(a2))
+               or a1.left ->exists(a0 | actionsInScenario->includes(a0))
+            )
+        )
+      )
+
+
+context Location
+    inv AcyclicLocationHierarchy:
+        not self.encloses->closure(encloses)->includes(self)
+
+context Activation
+    inv ActivationLocationAllowed:
+        let uLocs : Set(Location) =
+            UserAt.allInstances()
+                ->select(ua | ua.snap = self.snap and ua.user = self.session.user)
+                ->collect(ua | ua.loc)->asSet()
+        in
+            uLocs->exists(lu |
+                self.role.activateLoc->includes(lu)
+                or lu.ancestors()->exists(a | self.role.activateLoc->includes(a))
+            )
+
+
+context Snapshot
+    inv ExactlyOneLocationPerUser:
+        User.allInstances()->forAll(u |
+            UserAt.allInstances()
+                ->select(ua | ua.snap = self and ua.user = u)
+                ->size() = 1
+        )
+
+context User
+  inv AssignedRolesRespectAssignLocation:
+    self.roles->forAll(r |
+      UserAt.allInstances()
+        ->exists(ua |
+            ua.user = self and
+            ( r.assignLoc->includes(ua.loc)
+              or ua.loc.ancestors()->exists(a | r.assignLoc->includes(a)) )
+        )
+    )
+
+context User::CreateSession(): Session
+post:
+    result.oclIsNew() = true and
+    self.sessions = self.sessions@pre->including(result)
+
+context Assignment
+    inv AssignmentLocationAllowed:
+        let uLocs : Set(Location) =
+            UserAt.allInstances()
+                ->select(ua | ua.snap = self.asgSnap and ua.user = self.asgUser)
+                ->collect(ua | ua.loc)->asSet()
+        in
+            uLocs->exists(lu |
+                self.asgRole.assignLoc->includes(lu)
+                or lu.ancestors()->exists(a | self.asgRole.assignLoc->includes(a))
+            )
+
+context Assignment
+    inv AssignmentReflectsMembership:
+        self.asgUser.roles->includes(self.asgRole)
