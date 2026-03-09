@@ -32,3 +32,12 @@ For the complete rationale, diagrams, and validation evidence (including DSOD va
 
 - [RBAC_Writeup___LRBAC.pdf](RBAC_Writeup___LRBAC.pdf)
 
+*Note that modifications to test file names are not reflected in the write-up. Instead, the write-up refers to the tests by run number, i.e., 1.x ... 7.x. Below is the mapping from the naming convention used for the write-up to the updated naming convention.*
+
+- 1.x -> checkAccess_ancestorAndExactLocation_grant.x
+- 2.x -> checkAccess_userLocationMismatch_deny.x
+- 3.x -> checkAccess_objectLocationMismatch_deny.x
+- 4.x -> checkAccess_missingActivationAtSnapshot_deny.x
+- 5.x -> checkAccess_rbdsod_conflictBlocksMutuallyExclusiveAction.x
+- 6.x -> checkAccess_hbdsod_priorConflictBlocksAtSuccessorSnapshot.x
+- 7.x -> checkAccess_bothLocationsSatisfiedViaAncestors_grant.x
