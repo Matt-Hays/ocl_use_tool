@@ -9,7 +9,7 @@ A compact, validated **Location‑Aware RBAC (LRBAC)** model for the **USE** (UM
 ## What’s here
 
 - [LRBAC.use](LRBAC.use) — the model specification (classes, associations, invariants, helper ops)
-- `1.x … 7.x` — self‑contained scenarios; each resets the universe, builds a minimal setup, and issues a small number of queries (with expected outcomes commented inline)
+- `checkAccess... .x` — self‑contained scenarios; each resets the universe, builds a minimal setup, and issues a small number of queries (with expected outcomes commented inline)
 - [RBAC_Writeup___LRBAC.pdf](RBAC_Writeup___LRBAC.pdf) — full design & validation write‑up
 
 > Scenarios are independent. Run them one at a time. Each execution will resets the environment.
@@ -19,7 +19,7 @@ A compact, validated **Location‑Aware RBAC (LRBAC)** model for the **USE** (UM
 ## Quick start (high‑level)
 
 1) Open the model (`LRBAC.use`) in USE.  
-2) Execute any one of the scenario files (`1.x` … `7.x`).  
+2) Execute any one of the scenario files (`checkAccess... .x`).  
 3) Inspect the final queries in the scenario; expected results are noted in comments.
 
 > Please refer to USE tooling documentation for specific USE commands. Execution result examples are shown and discussed in the [full write-up](RBAC_Writeup___LRBAC.pdf).
